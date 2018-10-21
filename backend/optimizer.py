@@ -1,10 +1,14 @@
 import itertools
 import logging
+import math
+from collections import defaultdict
 from itertools import chain
+from random import random, shuffle, randint
 from typing import List
 
 import numpy as np
 import pandas as pd
+from scipy import optimize
 
 
 class Optimizer:
@@ -14,7 +18,9 @@ class Optimizer:
         self.differentiated_loads = []
         self.differentiated_production = None
         self.indices = []
+        self.current_config = None
         self.penalty_factor = 1.0
+        self.min_value = float('inf')
 
     # The main function that optimizes the schedule. How the schedule and job should be implemented is up for discussion
     def optimize(self):
@@ -30,32 +36,52 @@ class Optimizer:
             self.differentiated_loads.append(self.differentiate_and_interpolate(s[1].load_profile, indices))
 
         objective = np.zeros(len(self.producer.schedule))
-        # return optimize.minimize(self.to_minimize, objective, tol=1.0, method="trust-ncg")
         configs = list(map(list, itertools.product([0, 1], repeat=len(self.differentiated_loads))))
+        shuffle(configs)
         return self.recursive_binary_optimizer(configs, float('inf'), configs[0])
 
     def to_minimize(self, schedule: List[float]):
-        produced = []
-        consumed = []
+        if len(list(filter(lambda x: math.isnan(x), schedule))) > 0:
+            return float('inf')
+
+        produced = defaultdict(float)
+        consumed = defaultdict(float)
+        current_loads = [l for i, l in enumerate(self.differentiated_loads) if self.current_config[i] > 0]
 
         for t in self.indices:
-            consumed_t = 0
-            for i, load in enumerate(self.differentiated_loads):
-                if schedule[i] > 0:
-                    consumed_t += load[t]
+            for i, load in enumerate(current_loads):
+                consumed[t + int(schedule[i])] += load[t]
+            produced[t] += self.differentiated_production[t]
 
-            consumed.append(consumed_t)
-            produced.append(self.differentiated_production[t])
+        ts = list(set(produced.keys()).union(consumed.keys()))
+        sorted(ts)
+
+        produced_values = []
+        consumed_values = []
+        for t in ts:
+            if t in produced:
+                produced_values.append(produced[t])
+            else:
+                produced_values.append(np.nan)
+            if t in consumed:
+                consumed_values.append(consumed[t])
+            else:
+                consumed_values.append(np.nan)
+        produced_series = pd.Series(index=ts, data=produced_values).interpolate(method="barycentric")
+        consumed_series = pd.Series(index=ts, data=consumed_values).interpolate(method="barycentric")
 
         penalty = 0
         diff = 0
-        for p, c in zip(produced, consumed):
+        for p, c in zip(list(produced_series.values), list(consumed_series.values)):
             diff_t = abs(p - c)
             diff += diff_t
             if c > p:
                 penalty += diff_t
 
-        return diff, penalty
+        if penalty > self.min_value:
+            return float('inf')
+
+        return diff + penalty
 
     def binary_optimzier(self):
         configs = map(list, itertools.product([0, 1], repeat=len(self.differentiated_loads)))
@@ -71,16 +97,23 @@ class Optimizer:
     def recursive_binary_optimizer(self, configs, min_value, min_config):
         if len(configs) == 0:
             return min_config
-        current_config = configs[0]
-        diff, penalty = self.to_minimize(current_config)
+        self.current_config = configs[0]
+        bounds = [(s[1].est, s[1].lst) for i, s in enumerate(self.producer.schedule) if self.current_config[i] >= 1]
+        s = [randint(s[1].est, s[1].lst) for i, s in enumerate(self.producer.schedule) if self.current_config[i] >= 1]
+        if len(s) > 0:
+            result = optimize.minimize(self.to_minimize, s, tol=0.0, method='L-BFGS-B', bounds=bounds)
+        else:
+            return self.recursive_binary_optimizer(configs[1:], min_value, min_config)
 
-        if penalty > min_value:
-            config_indices = [i for i, x in enumerate(current_config) if x == 1.0]
+        diff = result.fun
+        if diff == float('inf'):
+            config_indices = [i for i, x in enumerate(self.current_config) if x == 1.0]
             new_configs = list(filter(lambda c: not all(map(lambda i: c[i], config_indices)), configs))
             return self.recursive_binary_optimizer(new_configs, min_value, min_config)
 
-        elif penalty + diff < min_value:
-            return self.recursive_binary_optimizer(configs[1:], penalty + diff, current_config)
+        elif diff < min_value:
+            self.min_value = diff
+            return self.recursive_binary_optimizer(configs[1:], diff, self.current_config)
 
         else:
             return self.recursive_binary_optimizer(configs[1:], min_value, min_config)

@@ -9,9 +9,9 @@ from backend.producer import Producer
 def test_optimize():
     man = Manager()
     producer = Producer("id", man)
-    job0 = (None, Job("id", 0, 0, pd.Series(index=[0, 5], data=[0.0, 40.0])), JobStatus.active)
-    job1 = (None, Job("id", 0, 0, pd.Series(index=[0, 2], data=[0.0, 20.0])), JobStatus.active)
-    job2 = (None, Job("id", 0, 0, pd.Series(index=[2, 5], data=[0.0, 30.0])), JobStatus.active)
+    job0 = (None, Job("id", 0, 1, pd.Series(index=[0, 5], data=[0.0, 40.0])), JobStatus.active)
+    job1 = (None, Job("id", 0, 2, pd.Series(index=[0, 2], data=[0.0, 20.0])), JobStatus.active)
+    job2 = (None, Job("id", 0, 3, pd.Series(index=[2, 5], data=[0.0, 30.0])), JobStatus.active)
     producer.schedule = [job0, job1, job2]
     producer.prediction = pd.Series(index=[0, 5], data=[0.0, 50.0])
 
